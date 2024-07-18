@@ -2544,17 +2544,389 @@ int ast_sip_session_refresh(struct ast_sip_session *session,
 		on_response, method, generate_new_sdp, media_state, NULL, 0);
 }
 
+static int sip_session_update_direction(struct ast_sip_session *session,
+		ast_sip_session_request_creation_cb on_request_creation,
+		ast_sip_session_sdp_creation_cb on_sdp_creation,
+		ast_sip_session_response_cb on_response,
+		int update_method, int new_direction, int generate_new_sdp,
+		struct ast_sip_session_media_state *pending_media_state,
+		struct ast_sip_session_media_state *active_media_state,
+		int queued)
+{
+	enum ast_sip_session_refresh_method method = update_method==0 ? AST_SIP_SESSION_REFRESH_METHOD_INVITE : AST_SIP_SESSION_REFRESH_METHOD_UPDATE;
+	
+	pjsip_inv_session *inv_session = session->inv_session;
+	pjmedia_sdp_session *new_sdp = NULL;
+	pjsip_tx_data *tdata;
+	int res = -1;
+	SCOPE_ENTER(3, "%s: New SDP? %s  Queued? %s DP: %s  DA: %s\n", ast_sip_session_get_name(session),
+		generate_new_sdp ? "yes" : "no", queued ? "yes" : "no",
+		pending_media_state ? ast_str_tmp(256, ast_stream_topology_to_str(pending_media_state->topology, &STR_TMP)) : "none",
+		active_media_state ? ast_str_tmp(256, ast_stream_topology_to_str(active_media_state->topology, &STR_TMP)) : "none");
+
+	if (pending_media_state && (!pending_media_state->topology || !generate_new_sdp)) {
+
+		ast_sip_session_media_state_free(pending_media_state);
+		ast_sip_session_media_state_free(active_media_state);
+		SCOPE_EXIT_RTN_VALUE(-1, "%s: Not sending reinvite because %s%s\n", ast_sip_session_get_name(session),
+			pending_media_state->topology == NULL ? "pending topology is null " : "",
+				!generate_new_sdp ? "generate_new_sdp is false" : "");
+	}
+
+	if (inv_session->state == PJSIP_INV_STATE_DISCONNECTED) {
+		/* Don't try to do anything with a hung-up call */
+		ast_sip_session_media_state_free(pending_media_state);
+		ast_sip_session_media_state_free(active_media_state);
+		SCOPE_EXIT_RTN_VALUE(0, "%s: Not sending reinvite because of disconnected state\n",
+				ast_sip_session_get_name(session));
+	}
+
+	/* If the dialog has not yet been established we have to defer until it has */
+	if (inv_session->dlg->state != PJSIP_DIALOG_STATE_ESTABLISHED) {
+		res = delay_request(session, on_request_creation, on_sdp_creation, on_response,
+			generate_new_sdp,
+			method == AST_SIP_SESSION_REFRESH_METHOD_INVITE
+				? DELAYED_METHOD_INVITE : DELAYED_METHOD_UPDATE,
+			pending_media_state, active_media_state ? active_media_state : ast_sip_session_media_state_clone(session->active_media_state), queued);
+		SCOPE_EXIT_RTN_VALUE(res, "%s: Delay sending reinvite because dialog has not been established\n",
+			ast_sip_session_get_name(session));
+	}
+
+	if (method == AST_SIP_SESSION_REFRESH_METHOD_INVITE) {
+		if (inv_session->invite_tsx) {
+			/* We can't send a reinvite yet, so delay it */
+			res = delay_request(session, on_request_creation, on_sdp_creation,
+				on_response, generate_new_sdp, DELAYED_METHOD_INVITE, pending_media_state,
+				active_media_state ? active_media_state : ast_sip_session_media_state_clone(session->active_media_state), queued);
+			SCOPE_EXIT_RTN_VALUE(res, "%s: Delay sending reinvite because of outstanding transaction\n",
+				ast_sip_session_get_name(session));
+		} else if (inv_session->state != PJSIP_INV_STATE_CONFIRMED) {
+			/* Initial INVITE transaction failed to progress us to a confirmed state
+			 * which means re-invites are not possible
+			 */
+			ast_sip_session_media_state_free(pending_media_state);
+			ast_sip_session_media_state_free(active_media_state);
+			SCOPE_EXIT_RTN_VALUE(0, "%s: Not sending reinvite because not in confirmed state\n",
+				ast_sip_session_get_name(session));
+		}
+	}
+
+	if (generate_new_sdp) {
+		/* SDP can only be generated if current negotiation has already completed */
+		if (inv_session->neg
+			&& pjmedia_sdp_neg_get_state(inv_session->neg)
+				!= PJMEDIA_SDP_NEG_STATE_DONE) {
+			res = delay_request(session, on_request_creation, on_sdp_creation,
+				on_response, generate_new_sdp,
+				method == AST_SIP_SESSION_REFRESH_METHOD_INVITE
+					? DELAYED_METHOD_INVITE : DELAYED_METHOD_UPDATE, pending_media_state,
+				active_media_state ? active_media_state : ast_sip_session_media_state_clone(session->active_media_state), queued);
+			SCOPE_EXIT_RTN_VALUE(res, "%s: Delay session refresh with new SDP because SDP negotiation is not yet done\n",
+				ast_sip_session_get_name(session));
+		}
+
+		/* If an explicitly requested media state has been provided use it instead of any pending one */
+		if (pending_media_state) {
+			int index;
+			int type_streams[AST_MEDIA_TYPE_END] = {0};
+
+			ast_trace(-1, "%s: Pending media state exists\n", ast_sip_session_get_name(session));
+
+			/* Media state conveys a desired media state, so if there are outstanding
+			 * delayed requests we need to ensure we go into the queue and not jump
+			 * ahead. If we sent this media state now then updates could go out of
+			 * order.
+			 */
+			if (!queued && !AST_LIST_EMPTY(&session->delayed_requests)) {
+				res = delay_request(session, on_request_creation, on_sdp_creation,
+					on_response, generate_new_sdp,
+					method == AST_SIP_SESSION_REFRESH_METHOD_INVITE
+						? DELAYED_METHOD_INVITE : DELAYED_METHOD_UPDATE, pending_media_state,
+						active_media_state ? active_media_state : ast_sip_session_media_state_clone(session->active_media_state), queued);
+				SCOPE_EXIT_RTN_VALUE(res, "%s: Delay sending reinvite because of outstanding requests\n",
+					ast_sip_session_get_name(session));
+			}
+
+			/*
+			 * Attempt to resolve only if objects are available, and it's not
+			 * switching to or from an image type.
+			 */
+			if (active_media_state && active_media_state->topology &&
+				(!active_media_state->default_session[AST_MEDIA_TYPE_IMAGE] ==
+				 !pending_media_state->default_session[AST_MEDIA_TYPE_IMAGE])) {
+
+				struct ast_sip_session_media_state *new_pending_state;
+
+				ast_trace(-1, "%s: Active media state exists and is%s equal to pending\n", ast_sip_session_get_name(session),
+					!ast_stream_topology_equal(active_media_state->topology,pending_media_state->topology) ? " not" : "");
+				ast_trace(-1, "%s: DP: %s\n", ast_sip_session_get_name(session), ast_str_tmp(256, ast_stream_topology_to_str(pending_media_state->topology, &STR_TMP)));
+				ast_trace(-1, "%s: DA: %s\n", ast_sip_session_get_name(session), ast_str_tmp(256, ast_stream_topology_to_str(active_media_state->topology, &STR_TMP)));
+				ast_trace(-1, "%s: CP: %s\n", ast_sip_session_get_name(session), ast_str_tmp(256, ast_stream_topology_to_str(session->pending_media_state->topology, &STR_TMP)));
+				ast_trace(-1, "%s: CA: %s\n", ast_sip_session_get_name(session), ast_str_tmp(256, ast_stream_topology_to_str(session->active_media_state->topology, &STR_TMP)));
+
+				new_pending_state = resolve_refresh_media_states(ast_sip_session_get_name(session),
+					pending_media_state, active_media_state, session->active_media_state, 1);
+				if (new_pending_state) {
+					ast_trace(-1, "%s: NP: %s\n", ast_sip_session_get_name(session), ast_str_tmp(256, ast_stream_topology_to_str(new_pending_state->topology, &STR_TMP)));
+					ast_sip_session_media_state_free(pending_media_state);
+					pending_media_state = new_pending_state;
+				} else {
+					ast_sip_session_media_state_reset(pending_media_state);
+					ast_sip_session_media_state_free(active_media_state);
+					SCOPE_EXIT_LOG_RTN_VALUE(-1, LOG_WARNING, "%s: Unable to merge media states\n", ast_sip_session_get_name(session));
+				}
+			}
+
+			/* Prune the media state so the number of streams fit within the configured limits - we do it here
+			 * so that the index of the resulting streams in the SDP match. If we simply left the streams out
+			 * of the SDP when producing it we'd be in trouble. We also enforce formats here for media types that
+			 * are configurable on the endpoint.
+			 */
+			ast_trace(-1, "%s: Pruning and checking formats of streams\n", ast_sip_session_get_name(session));
+
+			for (index = 0; index < ast_stream_topology_get_count(pending_media_state->topology); ++index) {
+				struct ast_stream *existing_stream = NULL;
+				struct ast_stream *stream = ast_stream_topology_get_stream(pending_media_state->topology, index);
+				SCOPE_ENTER(4, "%s: Checking stream %s\n", ast_sip_session_get_name(session),
+					ast_stream_get_name(stream));
+
+				if (session->active_media_state->topology &&
+					index < ast_stream_topology_get_count(session->active_media_state->topology)) {
+					existing_stream = ast_stream_topology_get_stream(session->active_media_state->topology, index);
+					ast_trace(-1, "%s: Found existing stream %s\n", ast_sip_session_get_name(session),
+						ast_stream_get_name(existing_stream));
+				}
+
+				if (is_stream_limitation_reached(ast_stream_get_type(stream), session->endpoint, type_streams)) {
+					if (index < AST_VECTOR_SIZE(&pending_media_state->sessions)) {
+						struct ast_sip_session_media *session_media = AST_VECTOR_GET(&pending_media_state->sessions, index);
+
+						ao2_cleanup(session_media);
+						AST_VECTOR_REMOVE(&pending_media_state->sessions, index, 1);
+					}
+
+					ast_stream_topology_del_stream(pending_media_state->topology, index);
+					ast_trace(-1, "%s: Dropped overlimit stream %s\n", ast_sip_session_get_name(session),
+						ast_stream_get_name(stream));
+
+					/* A stream has potentially moved into our spot so we need to jump back so we process it */
+					index -= 1;
+					SCOPE_EXIT_EXPR(continue);
+				}
+
+				/* No need to do anything with stream if it's media state is removed */
+				if (ast_stream_get_state(stream) == AST_STREAM_STATE_REMOVED) {
+					/* If there is no existing stream we can just not have this stream in the topology at all. */
+					if (!existing_stream) {
+						ast_trace(-1, "%s: Dropped removed stream %s\n", ast_sip_session_get_name(session),
+							ast_stream_get_name(stream));
+						ast_stream_topology_del_stream(pending_media_state->topology, index);
+						/* TODO: Do we need to remove the corresponding media state? */
+						index -= 1;
+					}
+					SCOPE_EXIT_EXPR(continue);
+				}
+
+				/* Enforce the configured allowed codecs on audio and video streams */
+				if ((ast_stream_get_type(stream) == AST_MEDIA_TYPE_AUDIO || ast_stream_get_type(stream) == AST_MEDIA_TYPE_VIDEO) &&
+					!ast_stream_get_metadata(stream, "pjsip_session_refresh")) {
+					struct ast_format_cap *joint_cap;
+
+					joint_cap = ast_format_cap_alloc(AST_FORMAT_CAP_FLAG_DEFAULT);
+					if (!joint_cap) {
+						ast_sip_session_media_state_free(pending_media_state);
+						ast_sip_session_media_state_free(active_media_state);
+						res = -1;
+						SCOPE_EXIT_LOG_EXPR(goto end, LOG_ERROR, "%s: Unable to alloc format caps\n", ast_sip_session_get_name(session));
+					}
+					ast_format_cap_get_compatible(ast_stream_get_formats(stream), session->endpoint->media.codecs, joint_cap);
+					if (!ast_format_cap_count(joint_cap)) {
+						ao2_ref(joint_cap, -1);
+
+						if (!existing_stream) {
+							/* If there is no existing stream we can just not have this stream in the topology
+							 * at all.
+							 */
+							ast_stream_topology_del_stream(pending_media_state->topology, index);
+							index -= 1;
+							SCOPE_EXIT_EXPR(continue, "%s: Dropped incompatible stream %s\n",
+								ast_sip_session_get_name(session), ast_stream_get_name(stream));
+						} else if (ast_stream_get_state(stream) != ast_stream_get_state(existing_stream) ||
+								strcmp(ast_stream_get_name(stream), ast_stream_get_name(existing_stream))) {
+							/* If the underlying stream is a different type or different name then we have to
+							 * mark it as removed, as it is replacing an existing stream. We do this so order
+							 * is preserved.
+							 */
+							ast_stream_set_state(stream, AST_STREAM_STATE_REMOVED);
+							SCOPE_EXIT_EXPR(continue, "%s: Dropped incompatible stream %s\n",
+								ast_sip_session_get_name(session), ast_stream_get_name(stream));
+						} else {
+							/* However if the stream is otherwise remaining the same we can keep the formats
+							 * that exist on it already which allows media to continue to flow. We don't modify
+							 * the format capabilities but do need to cast it so that ao2_bump can raise the
+							 * reference count.
+							 */
+							joint_cap = ao2_bump((struct ast_format_cap *)ast_stream_get_formats(existing_stream));
+						}
+					}
+					ast_stream_set_formats(stream, joint_cap);
+					ao2_cleanup(joint_cap);
+				}
+
+				++type_streams[ast_stream_get_type(stream)];
+
+				SCOPE_EXIT();
+			}
+
+			if (session->active_media_state->topology) {
+				/* SDP is a fun thing. Take for example the fact that streams are never removed. They just become
+				 * declined. To better handle this in the case where something requests a topology change for fewer
+				 * streams than are currently present we fill in the topology to match the current number of streams
+				 * that are active.
+				 */
+
+				for (index = ast_stream_topology_get_count(pending_media_state->topology);
+					index < ast_stream_topology_get_count(session->active_media_state->topology); ++index) {
+					struct ast_stream *stream = ast_stream_topology_get_stream(session->active_media_state->topology, index);
+					struct ast_stream *cloned;
+					int position;
+					SCOPE_ENTER(4, "%s: Stream %s not in pending\n", ast_sip_session_get_name(session),
+						ast_stream_get_name(stream));
+
+					cloned = ast_stream_clone(stream, NULL);
+					if (!cloned) {
+						ast_sip_session_media_state_free(pending_media_state);
+						ast_sip_session_media_state_free(active_media_state);
+						res = -1;
+						SCOPE_EXIT_LOG_EXPR(goto end, LOG_ERROR, "%s: Unable to clone stream %s\n",
+							ast_sip_session_get_name(session), ast_stream_get_name(stream));
+					}
+
+					ast_stream_set_state(cloned, AST_STREAM_STATE_REMOVED);
+					position = ast_stream_topology_append_stream(pending_media_state->topology, cloned);
+					if (position < 0) {
+						ast_stream_free(cloned);
+						ast_sip_session_media_state_free(pending_media_state);
+						ast_sip_session_media_state_free(active_media_state);
+						res = -1;
+						SCOPE_EXIT_LOG_EXPR(goto end, LOG_ERROR, "%s: Unable to append cloned stream\n",
+							ast_sip_session_get_name(session));
+					}
+					SCOPE_EXIT("%s: Appended empty stream in position %d to make counts match\n",
+						ast_sip_session_get_name(session), position);
+				}
+
+				/*
+				 * We can suppress this re-invite if the pending topology is equal to the currently
+				 * active topology.
+				 */
+				/*
+					Change compared to sip_refresh_session, I don't want to suppress any re-invites here
+ 				*/
+				/*if (ast_stream_topology_equal(session->active_media_state->topology, pending_media_state->topology)) {
+					ast_trace(-1, "%s: CA: %s\n", ast_sip_session_get_name(session), ast_str_tmp(256, ast_stream_topology_to_str(session->active_media_state->topology, &STR_TMP)));
+					ast_trace(-1, "%s: NP: %s\n", ast_sip_session_get_name(session), ast_str_tmp(256, ast_stream_topology_to_str(pending_media_state->topology, &STR_TMP)));
+					ast_sip_session_media_state_free(pending_media_state);
+					ast_sip_session_media_state_free(active_media_state);
+					SCOPE_EXIT_RTN_VALUE(queued ? 1 : 0, "%s: Topologies are equal. Not sending re-invite\n",
+						ast_sip_session_get_name(session));
+				}*/
+			}
+
+			ast_sip_session_media_state_free(session->pending_media_state);
+			session->pending_media_state = pending_media_state;
+		}
+
+		new_sdp = generate_session_refresh_sdp(session);
+		
+		// Change compared to sip_refresh_session, change the media directions
+		for (int i = 0; i < new_sdp->media_count; ++i) {
+			pjmedia_sdp_media *m = new_sdp->media[i];
+			pjmedia_sdp_attr *sendrecv;
+			pjmedia_sdp_attr *sendonly;
+			pjmedia_sdp_attr *recvonly;
+			pjmedia_sdp_attr *inactive;
+			
+			sendrecv = pjmedia_sdp_attr_find2(m->attr_count, m->attr, "sendrecv", NULL);
+			sendonly = pjmedia_sdp_attr_find2(m->attr_count, m->attr, "sendonly", NULL);
+			recvonly = pjmedia_sdp_attr_find2(m->attr_count, m->attr, "recvonly", NULL);
+			inactive = pjmedia_sdp_attr_find2(m->attr_count, m->attr, "inactive", NULL);
+
+			if(sendrecv || sendonly || recvonly || inactive){
+                		const char* new_direction_str = (new_direction==0) ? "sendrecv" :
+                                        (new_direction==1) ? "sendonly" :
+                                        (new_direction==2) ? "recvonly" :
+                                        (new_direction==3) ? "inactive" : "sendrecv";
+
+				pjmedia_sdp_attr *to_remove = sendrecv ?: sendonly ?: recvonly ?: inactive;
+				pjmedia_sdp_attr *new_direction_attr;
+				
+				pjmedia_sdp_attr_remove(&m->attr_count, m->attr, to_remove);
+				
+				new_direction_attr = pjmedia_sdp_attr_create(session->inv_session->pool, new_direction_str, NULL);
+				pjmedia_sdp_media_add_attr(m, new_direction_attr);
+			}
+		}	
+
+
+		if (!new_sdp) {
+			ast_sip_session_media_state_reset(session->pending_media_state);
+			ast_sip_session_media_state_free(active_media_state);
+			SCOPE_EXIT_LOG_RTN_VALUE(-1, LOG_WARNING, "%s: Failed to generate session refresh SDP. Not sending session refresh\n",
+				ast_sip_session_get_name(session));
+		}
+		if (on_sdp_creation) {
+			if (on_sdp_creation(session, new_sdp)) {
+				ast_sip_session_media_state_reset(session->pending_media_state);
+				ast_sip_session_media_state_free(active_media_state);
+				SCOPE_EXIT_LOG_RTN_VALUE(-1, LOG_WARNING, "%s: on_sdp_creation failed\n", ast_sip_session_get_name(session));
+			}
+		}
+	}
+
+	if (method == AST_SIP_SESSION_REFRESH_METHOD_INVITE) {
+		if (pjsip_inv_reinvite(inv_session, NULL, new_sdp, &tdata)) {
+			if (generate_new_sdp) {
+				ast_sip_session_media_state_reset(session->pending_media_state);
+			}
+			ast_sip_session_media_state_free(active_media_state);
+			SCOPE_EXIT_LOG_RTN_VALUE(-1, LOG_WARNING, "%s: Failed to create reinvite properly\n", ast_sip_session_get_name(session));
+		}
+	} else if (pjsip_inv_update(inv_session, NULL, new_sdp, &tdata)) {
+		if (generate_new_sdp) {
+			ast_sip_session_media_state_reset(session->pending_media_state);
+		}
+		ast_sip_session_media_state_free(active_media_state);
+		SCOPE_EXIT_LOG_RTN_VALUE(-1, LOG_WARNING, "%s: Failed to create UPDATE properly\n", ast_sip_session_get_name(session));
+	}
+	if (on_request_creation) {
+		if (on_request_creation(session, tdata)) {
+			if (generate_new_sdp) {
+				ast_sip_session_media_state_reset(session->pending_media_state);
+			}
+			ast_sip_session_media_state_free(active_media_state);
+			SCOPE_EXIT_LOG_RTN_VALUE(-1, LOG_WARNING, "%s: on_request_creation failed.\n", ast_sip_session_get_name(session));
+		}
+	}
+	ast_sip_session_send_request_with_cb(session, tdata, on_response);
+	ast_sip_session_media_state_free(active_media_state);
+
+end:
+	SCOPE_EXIT_RTN_VALUE(res, "%s: Sending session refresh SDP via %s\n", ast_sip_session_get_name(session),
+		method == AST_SIP_SESSION_REFRESH_METHOD_INVITE ? "re-INVITE" : "UPDATE");
+}
+
 int ast_sip_session_update_direction(struct ast_sip_session *session,
                 ast_sip_session_request_creation_cb on_request_creation,
                 ast_sip_session_sdp_creation_cb on_sdp_creation,
                 ast_sip_session_response_cb on_response,
-                int method,
+                int update_method,
                 int new_direction,
                 int generate_new_sdp,
                 struct ast_sip_session_media_state *media_state)
 {
-	// TODO
-	return 0;
+	return sip_session_update_direction(session, on_request_creation, on_sdp_creation,
+                on_response, update_method, new_direction, generate_new_sdp, media_state, NULL, 0);
 }
 
 int ast_sip_session_regenerate_answer(struct ast_sip_session *session,

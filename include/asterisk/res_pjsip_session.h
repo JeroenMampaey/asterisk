@@ -728,7 +728,7 @@ int ast_sip_session_update_direction(struct ast_sip_session *session,
                 ast_sip_session_request_creation_cb on_request_creation,
                 ast_sip_session_sdp_creation_cb on_sdp_creation,
                 ast_sip_session_response_cb on_response,
-                int method,
+                int update_method,
 		int new_direction,
                 int generate_new_sdp,
                 struct ast_sip_session_media_state *media_state);
