@@ -2544,6 +2544,19 @@ int ast_sip_session_refresh(struct ast_sip_session *session,
 		on_response, method, generate_new_sdp, media_state, NULL, 0);
 }
 
+int ast_sip_session_update_direction(struct ast_sip_session *session,
+                ast_sip_session_request_creation_cb on_request_creation,
+                ast_sip_session_sdp_creation_cb on_sdp_creation,
+                ast_sip_session_response_cb on_response,
+                int method,
+                int new_direction,
+                int generate_new_sdp,
+                struct ast_sip_session_media_state *media_state)
+{
+	// TODO
+	return 0;
+}
+
 int ast_sip_session_regenerate_answer(struct ast_sip_session *session,
 		ast_sip_session_sdp_creation_cb on_sdp_creation)
 {

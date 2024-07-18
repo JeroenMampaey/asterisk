@@ -1241,7 +1241,7 @@ int pjsip_acf_session_refresh_write(struct ast_channel *chan, const char *cmd, c
 
 	channel = ast_channel_tech_pvt(chan);
 	rdata.session = channel->session;
-
+	
 	if (!strcmp(value, "invite")) {
 		rdata.method = AST_SIP_SESSION_REFRESH_METHOD_INVITE;
 	} else if (!strcmp(value, "update")) {
@@ -1251,9 +1251,81 @@ int pjsip_acf_session_refresh_write(struct ast_channel *chan, const char *cmd, c
 	return ast_sip_push_task_wait_serializer(channel->session->serializer, refresh_write_cb, &rdata);
 }
 
-int pjsip_acf_update_stream_direction_write(struct ast_channel *chan, const char *cmd, char *data, const char *value){
-	ast_log(LOG_WARNING, "Set(PJSIP_UPDATE_STREAM_DIRECTION()=...) was called!.\n");
+struct stream_direction_data {
+	struct ast_sip_session *session;
+	int update_method;
+	int new_direction;
+};
+
+static int update_stream_direction_write_cb(void *obj){
+	struct stream_direction_data *data = obj;
+	struct session_refresh_state *state;
+
+	state = session_refresh_state_get_or_alloc(data->session);
+	if (!state) {
+		return -1;
+	}
+
+	ast_sip_session_update_direction(data->session, NULL, NULL,
+		sip_session_response_cb, data->update_method, data->new_direction, 1, state->media_state);
+
+	state->media_state = NULL;
+	ast_sip_session_remove_datastore(data->session, "pjsip_session_refresh");
 	return 0;
+}
+
+int pjsip_acf_update_stream_direction_write(struct ast_channel *chan, const char *cmd, char *data, const char *value){
+	struct ast_sip_channel_pvt *channel;
+	struct stream_direction_data sddata = {
+		.update_method = 0,
+		.new_direction = 0,
+	};
+	
+	char method[20];
+	char direction[20];
+    	sscanf(value, "%19[^,],%19s", method, direction);
+	
+	if (strcmp(method, "invite") == 0) {
+        	sddata.update_method = 0;
+    	} else if (strcmp(method, "update") == 0) {
+       		sddata.update_method = 1;
+    	} else {
+		ast_log(LOG_WARNING, "Set(PJSIP_UPDATE_STREAM_DIRECTION()=...) was called with invalid update method.\n");
+        	return -1;
+    	}
+
+	if (strcmp(direction, "sendrecv") == 0) {
+        	sddata.new_direction = 0;
+    	} else if (strcmp(direction, "sendonly") == 0) {
+        	sddata.new_direction = 1;
+    	} else if (strcmp(direction, "recvonly") == 0) {
+        	sddata.new_direction = 2;
+    	} else if (strcmp(direction, "inactive") == 0) {
+        	sddata.new_direction = 3;
+    	} else {
+		ast_log(LOG_WARNING, "Set(PJSIP_UPDATE_STREAM_DIRECTION()=...) was called with invalid direction.\n");
+        	return -1;
+	}
+	
+	if (!chan) {
+		ast_log(LOG_WARNING, "No channel was provided to %s function.\n", cmd);
+		return -1;
+	}
+
+	if (ast_channel_state(chan) != AST_STATE_UP) {
+		ast_log(LOG_WARNING, "'%s' not allowed on unanswered channel '%s'.\n", cmd, ast_channel_name(chan));
+		return -1;
+	}
+
+	if (strcmp(ast_channel_tech(chan)->type, "PJSIP")) {
+		ast_log(LOG_WARNING, "Cannot call %s on a non-PJSIP channel\n", cmd);
+		return -1;
+	}
+
+	channel = ast_channel_tech_pvt(chan);
+	sddata.session = channel->session;
+
+	return ast_sip_push_task_wait_serializer(channel->session->serializer, update_stream_direction_write_cb, &sddata);
 }
 
 struct hangup_data {
