@@ -122,6 +122,8 @@ int pjsip_acf_media_offer_read(struct ast_channel *chan, const char *cmd, char *
  */
 int pjsip_acf_session_refresh_write(struct ast_channel *chan, const char *cmd, char *data, const char *value);
 
+int pjsip_acf_update_stream_direction_write(struct ast_channel *chan, const char *cmd, char *data, const char *value);
+
 /*!
  * \brief PJSIP_DIAL_CONTACTS function read callback
  * \param chan The channel the function is called on

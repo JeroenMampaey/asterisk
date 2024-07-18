@@ -1251,6 +1251,11 @@ int pjsip_acf_session_refresh_write(struct ast_channel *chan, const char *cmd, c
 	return ast_sip_push_task_wait_serializer(channel->session->serializer, refresh_write_cb, &rdata);
 }
 
+int pjsip_acf_update_stream_direction_write(struct ast_channel *chan, const char *cmd, char *data, const char *value){
+	ast_log(LOG_WARNING, "Set(PJSIP_UPDATE_STREAM_DIRECTION()=...) was called!.\n");
+	return 0;
+}
+
 struct hangup_data {
 	struct ast_sip_session *session;
 	int response_code;

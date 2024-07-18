@@ -3271,6 +3271,11 @@ static struct ast_custom_function session_refresh_function = {
 	.write = pjsip_acf_session_refresh_write,
 };
 
+static struct ast_custom_function update_stream_direction_function = {
+        .name = "PJSIP_UPDATE_STREAM_DIRECTION",
+        .write = pjsip_acf_update_stream_direction_write,
+};
+
 static char *app_pjsip_hangup = "PJSIPHangup";
 
 /*!
@@ -3334,6 +3339,11 @@ static int load_module(void)
 		ast_log(LOG_WARNING, "Unable to register PJSIP_SEND_SESSION_REFRESH dialplan function\n");
 		goto end;
 	}
+	
+	if (ast_custom_function_register(&update_stream_direction_function)) {
+                ast_log(LOG_WARNING, "Unable to register PJSIP_UPDATE_STREAM_DIRECTION dialplan function\n");
+                goto end;
+        }
 
 	if (ast_register_application_xml(app_pjsip_hangup, pjsip_app_hangup)) {
 		ast_log(LOG_WARNING, "Unable to register PJSIPHangup dialplan application\n");
@@ -3390,6 +3400,7 @@ end:
 	ast_custom_function_unregister(&chan_pjsip_parse_uri_function);
 	ast_custom_function_unregister(&chan_pjsip_parse_uri_from_function);
 	ast_custom_function_unregister(&session_refresh_function);
+	ast_custom_function_unregister(&update_stream_direction_function);
 	ast_unregister_application(app_pjsip_hangup);
 	ast_manager_unregister(app_pjsip_hangup);
 
@@ -3423,6 +3434,7 @@ static int unload_module(void)
 	ast_custom_function_unregister(&chan_pjsip_parse_uri_function);
 	ast_custom_function_unregister(&chan_pjsip_parse_uri_from_function);
 	ast_custom_function_unregister(&session_refresh_function);
+	ast_custom_function_unregister(&update_stream_direction_function);
 	ast_unregister_application(app_pjsip_hangup);
 	ast_manager_unregister(app_pjsip_hangup);
 
