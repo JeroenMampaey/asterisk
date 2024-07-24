@@ -780,7 +780,7 @@ struct ast_channel_tech {
 	int (* const queryoption)(struct ast_channel *chan, int option, void *data, int *datalen);
 
 	/*! \brief Blind transfer other side (see app_transfer.c and ast_transfer() */
-	int (* const transfer)(struct ast_channel *chan, const char *newdest);
+	int (* const transfer)(struct ast_channel *chan, const char *newdest, const char *customReferTo);
 
 	/*! \brief Write a frame, in standard format */
 	int (* const write_video)(struct ast_channel *chan, struct ast_frame *frame);
@@ -2677,7 +2677,7 @@ int ast_transfer(struct ast_channel *chan, char *dest);
  * \param protocol protocol is the protocol result
  * SIP example, 0=success, 3xx-6xx is SIP error code
  */
-int ast_transfer_protocol(struct ast_channel *chan, char *dest, int *protocol);
+int ast_transfer_protocol(struct ast_channel *chan, char *dest, char *custom_refer_to, int *protocol);
 
 /*!
  * \brief Inherits channel variable from parent to child channel

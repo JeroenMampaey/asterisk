@@ -99,7 +99,7 @@ static struct ast_frame *chan_pjsip_read_stream(struct ast_channel *ast);
 static int chan_pjsip_write(struct ast_channel *ast, struct ast_frame *f);
 static int chan_pjsip_write_stream(struct ast_channel *ast, int stream_num, struct ast_frame *f);
 static int chan_pjsip_indicate(struct ast_channel *ast, int condition, const void *data, size_t datalen);
-static int chan_pjsip_transfer(struct ast_channel *ast, const char *target);
+static int chan_pjsip_transfer(struct ast_channel *ast, const char *target, const char *customReferTo);
 static int chan_pjsip_fixup(struct ast_channel *oldchan, struct ast_channel *newchan);
 static int chan_pjsip_devicestate(const char *data);
 static int chan_pjsip_queryoption(struct ast_channel *ast, int option, void *data, int *datalen);
@@ -2161,7 +2161,7 @@ static int transfer(void *data)
 }
 
 /*! \brief Function called by core for Asterisk initiated transfer */
-static int chan_pjsip_transfer(struct ast_channel *chan, const char *target)
+static int chan_pjsip_transfer(struct ast_channel *chan, const char *target, const char *customReferTo)
 {
 	struct ast_sip_channel_pvt *channel = ast_channel_tech_pvt(chan);
 	struct transfer_data *trnf_data = transfer_data_alloc(channel->session, target);

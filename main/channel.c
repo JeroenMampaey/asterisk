@@ -6485,7 +6485,7 @@ int ast_call(struct ast_channel *chan, const char *addr, int timeout)
 int ast_transfer(struct ast_channel *chan, char *dest)
 {
 	int protocol;
-	return ast_transfer_protocol(chan, dest, &protocol);
+	return ast_transfer_protocol(chan, dest, NULL, &protocol);
 }
 
 /*!
@@ -6495,7 +6495,7 @@ int ast_transfer(struct ast_channel *chan, char *dest)
 	\arg app_transfer
 	\arg the manager interface
 */
-int ast_transfer_protocol(struct ast_channel *chan, char *dest, int *protocol)
+int ast_transfer_protocol(struct ast_channel *chan, char *dest, char *customReferTo, int *protocol)
 {
 	int res = -1;
 
@@ -6507,7 +6507,7 @@ int ast_transfer_protocol(struct ast_channel *chan, char *dest, int *protocol)
 	ast_channel_lock(chan);
 	if (!ast_test_flag(ast_channel_flags(chan), AST_FLAG_ZOMBIE) && !ast_check_hangup(chan)) {
 		if (ast_channel_tech(chan)->transfer) {
-			res = ast_channel_tech(chan)->transfer(chan, dest);
+			res = ast_channel_tech(chan)->transfer(chan, dest, customReferTo);
 			if (!res)
 				res = 1;
 		} else

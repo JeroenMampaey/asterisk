@@ -1307,7 +1307,7 @@ static int iax2_sendimage(struct ast_channel *c, struct ast_frame *img);
 static int iax2_sendtext(struct ast_channel *c, const char *text);
 static int iax2_setoption(struct ast_channel *c, int option, void *data, int datalen);
 static int iax2_queryoption(struct ast_channel *c, int option, void *data, int *datalen);
-static int iax2_transfer(struct ast_channel *c, const char *dest);
+static int iax2_transfer(struct ast_channel *c, const char *dest, const char *customReferTo);
 static int iax2_write(struct ast_channel *c, struct ast_frame *f);
 static int iax2_sched_add(struct ast_sched_context *sched, int when, ast_sched_cb callback, const void *data);
 
@@ -5861,7 +5861,7 @@ done:
 	return res;
 }
 
-static int iax2_transfer(struct ast_channel *c, const char *dest)
+static int iax2_transfer(struct ast_channel *c, const char *dest, const char *customReferTo)
 {
 	unsigned short callno = PTR_TO_CALLNO(ast_channel_tech_pvt(c));
 	struct iax_ie_data ied = { "", };

@@ -91,12 +91,14 @@ static int transfer_exec(struct ast_channel *chan, const char *data)
 	char *slash;
 	char *tech = NULL;
 	char *dest = NULL;
+	char *custom_refer_to = NULL;
 	char *status;
 	char *parse;
 	int protocol = 0;
 	char status_protocol[20];
 	AST_DECLARE_APP_ARGS(args,
 		AST_APP_ARG(dest);
+		AST_APP_ARG(custom_refer_to);
 	);
 
 	if (ast_strlen_zero((char *)data)) {
@@ -111,6 +113,10 @@ static int transfer_exec(struct ast_channel *chan, const char *data)
 	AST_STANDARD_APP_ARGS(args, parse);
 
 	dest = args.dest;
+	
+	if(!ast_strlen_zero(args.custom_refer_to)){
+		custom_refer_to = args.custom_refer_to;
+	}
 
 	if ((slash = strchr(dest, '/')) && (len = (slash - dest))) {
 		tech = dest;
@@ -134,7 +140,7 @@ static int transfer_exec(struct ast_channel *chan, const char *data)
 
 	/* New transfer API returns a protocol code
 	   SIP example, 0 = success, 3xx-6xx are sip error codes for the REFER */
-	res = ast_transfer_protocol(chan, dest, &protocol);
+	res = ast_transfer_protocol(chan, dest, custom_refer_to, &protocol);
 
 	if (res < 0) {
 		status = "FAILURE";
