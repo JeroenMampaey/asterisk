@@ -1878,6 +1878,7 @@ static int chan_pjsip_indicate(struct ast_channel *ast, int condition, const voi
 struct transfer_data {
 	struct ast_sip_session *session;
 	char *target;
+	char *customReferTo;
 };
 
 static void transfer_data_destroy(void *obj)
@@ -1885,10 +1886,11 @@ static void transfer_data_destroy(void *obj)
 	struct transfer_data *trnf_data = obj;
 
 	ast_free(trnf_data->target);
+	ast_free(trnf_data->customReferTo);
 	ao2_cleanup(trnf_data->session);
 }
 
-static struct transfer_data *transfer_data_alloc(struct ast_sip_session *session, const char *target)
+static struct transfer_data *transfer_data_alloc(struct ast_sip_session *session, const char *target, const char* customReferTo)
 {
 	struct transfer_data *trnf_data = ao2_alloc(sizeof(*trnf_data), transfer_data_destroy);
 
@@ -1900,6 +1902,11 @@ static struct transfer_data *transfer_data_alloc(struct ast_sip_session *session
 		ao2_ref(trnf_data, -1);
 		return NULL;
 	}
+	
+	if (customReferTo!=NULL && !(trnf_data->customReferTo = ast_strdup(customReferTo))) {
+                ao2_ref(trnf_data, -1);
+                return NULL;
+        }
 
 	ao2_ref(session, +1);
 	trnf_data->session = session;
@@ -2074,7 +2081,7 @@ static void xfer_client_on_evsub_state(pjsip_evsub *sub, pjsip_event *event)
 	}
 }
 
-static void transfer_refer(struct ast_sip_session *session, const char *target)
+static void transfer_refer(struct ast_sip_session *session, const char *target, const char* customReferTo)
 {
 	pjsip_evsub *sub;
 	enum ast_control_transfer message = AST_TRANSFER_SUCCESS;
@@ -2100,9 +2107,16 @@ static void transfer_refer(struct ast_sip_session *session, const char *target)
 	 * when the implicit REFER subscription terminates */
 	pjsip_evsub_set_mod_data(sub, refer_callback_module.id, chan);
 	ao2_ref(chan, +1);
-
-	if (pjsip_xfer_initiate(sub, pj_cstr(&tmp, target), &packet) != PJ_SUCCESS) {
-		goto failure;
+	
+	if(customReferTo==0){
+		if (pjsip_xfer_initiate(sub, pj_cstr(&tmp, target), &packet) != PJ_SUCCESS) {
+                	goto failure;
+        	}
+	}
+	else{
+		if (pjsip_xfer_initiate(sub, pj_cstr(&tmp, customReferTo), &packet) != PJ_SUCCESS) {
+                	goto failure;
+        	}	
 	}
 
 	ref_by_val = pbx_builtin_getvar_helper(chan, "SIPREFERREDBYHDR");
@@ -2150,7 +2164,7 @@ static int transfer(void *data)
 		if (ast_channel_state(trnf_data->session->channel) == AST_STATE_RING) {
 			transfer_redirect(trnf_data->session, target);
 		} else {
-			transfer_refer(trnf_data->session, target);
+			transfer_refer(trnf_data->session, target, trnf_data->customReferTo);
 		}
 	}
 
@@ -2164,7 +2178,7 @@ static int transfer(void *data)
 static int chan_pjsip_transfer(struct ast_channel *chan, const char *target, const char *customReferTo)
 {
 	struct ast_sip_channel_pvt *channel = ast_channel_tech_pvt(chan);
-	struct transfer_data *trnf_data = transfer_data_alloc(channel->session, target);
+	struct transfer_data *trnf_data = transfer_data_alloc(channel->session, target, customReferTo);
 
 	if (!trnf_data) {
 		return -1;
