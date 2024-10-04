@@ -800,6 +800,22 @@ static void refer_blind_callback(struct ast_channel *chan, struct transfer_chann
 		pbx_builtin_setvar_helper(chan, "SIPREFERREDBYHDR", NULL);
 	}
 
+	pjsip_generic_string_hdr *refer_session_id;
+	static const pj_str_t str_refer_session_id = { "Session-ID", 10 };
+	refer_session_id = pjsip_msg_find_hdr_by_name(refer->rdata->msg_info.msg,
+		&str_refer_session_id, NULL);
+	if(refer_session_id){
+		size_t uri_size = pj_strlen(&refer_session_id->hvalue) + 1;
+		char *uri = ast_alloca(uri_size);
+
+		ast_copy_pj_str(uri, &refer_session_id->hvalue, uri_size);
+		pbx_builtin_setvar_helper(chan, "__SIPREFERSESSIONID", S_OR(uri, NULL));
+	}
+	else{
+		pbx_builtin_setvar_helper(chan, "SIPREFERSESSIONID", NULL);
+	}
+	
+
 	if (refer->replaces) {
 		char replaces[512];
 		char *replaces_val = NULL;

@@ -2127,6 +2127,11 @@ static void transfer_refer(struct ast_sip_session *session, const char *target, 
 		ast_sip_add_header(packet, "Referred-By", local_info);
 	}
 
+	const char* ref_session_id = pbx_builtin_getvar_helper(chan, "SIPREFERSESSIONID");
+	if (!ast_strlen_zero(ref_session_id)) {
+                ast_sip_add_header(packet, "Session-ID", ref_session_id);
+        }
+
 	if (pjsip_xfer_send_request(sub, packet) == PJ_SUCCESS) {
 		return;
 	}
