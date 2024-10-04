@@ -1,19 +1,16 @@
 # Custom Additions
 
-Added a new Diaplan Function `PJSIP_UPDATE_STREAM_DIRECTION()` which can send a reinvite or update to change the stream to sendrecv, sendonly, recvonly or inactive
-Example for putting the caller on hold:
+Added a new Diaplan Function `PJSIP_UPDATE_STREAM_DIRECTION()` which can send a reinvite or update to change the stream to sendrecv, sendonly, recvonly or inactive. Example for putting the caller on hold:
 ```
 same = n,Set(PJSIP_UPDATE_STREAM_DIRECTION()=invite,inactive)
 ```
 
-Added an optional second argument to the `Transfer` function to customize the `Refer-To` header
-Example for adding a `Replaces` field:
+Added an optional second argument to the `Transfer` function to customize the `Refer-To` header. Example for adding a `Replaces` field:
 ```
-Transfer(PJSIP/sip:1234@my-domain,<${CONTACT_URI}?Replaces=${CALL_ID}%3Bto-tag%3D${TO_TAG}%3Bfrom-tag%3D${FROM_TAG}>)
+same = Transfer(PJSIP/sip:1234@my-domain,<${CONTACT_URI}?Replaces=${CALL_ID}%3Bto-tag%3D${TO_TAG}%3Bfrom-tag%3D${FROM_TAG}>)
 ```
 
-Added a new Standard Variable `SIPREFERSESSIONID` which adds a `Session-ID` header to an outgoing REFER.
-Example:
+Added a new Standard Variable `SIPREFERSESSIONID` which adds a `Session-ID` header to an outgoing REFER. Example:
 ```
 same = n,Set(SIPREFERSESSIONID=a3a86bb42ac1e8c58592a9663bbd5ed5)
 same = n,Transfer(PJSIP/sip:1234@my-domain)
